@@ -1209,6 +1209,9 @@
         grid-column: span 2;
         max-height: 400px;
       }
+      .tab-content-wrapper {
+        min-height: 380px; /* Предотвращает сплющивание табов на планшетах */
+      }
       body { overflow-y: auto; height: auto; }
       .site-container { height: auto; }
     }
@@ -1218,6 +1221,9 @@
       .col-right { grid-column: span 1; }
       .site-header { flex-direction: column; align-items: stretch; }
       .logo { justify-content: center; }
+      .tab-content-wrapper {
+        min-height: 380px; /* Предотвращает сплющивание табов на мобильных телефонах */
+      }
     }
   </style>
 </head>
@@ -1751,6 +1757,12 @@
       const sunNode = document.getElementById('sun-node');
       if (!sunNode) return;
 
+      if (!sunriseStr || !sunsetStr || sunriseStr === "--:--" || sunsetStr === "--:--") {
+        sunNode.style.left = 'calc(50% - 10px)';
+        sunNode.style.bottom = '15px';
+        return;
+      }
+
       let localTime;
       try {
         const timeString = new Date().toLocaleTimeString('en-US', {
@@ -1765,6 +1777,7 @@
       }
 
       const parseTimeToMinutes = (str) => {
+        if (!str || !str.includes(':')) return 0;
         const [h, m] = str.split(':').map(Number);
         return h * 60 + m;
       };
@@ -1795,6 +1808,13 @@
 
     function updateUI(data, cityName, timezone) {
       if (!data) return;
+      
+      // Защитная проверка структуры API для избежания критических падений скрипта
+      if (!data.current || !data.hourly || !data.daily) {
+        console.error("Неполный ответ от погодного сервиса API", data);
+        return;
+      }
+
       LAST_WEATHER_DATA = data;
       LAST_CITY_NAME = cityName;
       LAST_TIMEZONE = timezone;
@@ -1836,7 +1856,7 @@
       else if (pressMm > 762) pressSub = "Повышенное (антициклон)";
       document.getElementById('view-pressure-sub').textContent = pressSub;
 
-      const uv = Math.round(data.daily.uv_index_max[0]);
+      const uv = Math.round(data.daily.uv_index_max ? (data.daily.uv_index_max[0] || 0) : 0);
       document.getElementById('view-uv').textContent = uv;
       let uvSub = "Безопасное солнце";
       if (uv >= 3 && uv <= 5) uvSub = "Умеренный SPF-15";
@@ -1844,18 +1864,24 @@
       else if (uv >= 8) uvSub = "Экстремальный риск!";
       document.getElementById('view-uv-sub').textContent = uvSub;
 
-      const first24HoursTemps = data.hourly.temperature_2m.slice(0, 24);
-      drawTrendSVG(first24HoursTemps);
+      const first24HoursTemps = data.hourly.temperature_2m ? data.hourly.temperature_2m.slice(0, 24) : [];
+      if (first24HoursTemps.length > 0) {
+        drawTrendSVG(first24HoursTemps);
+      }
 
-      const sunriseTime = data.daily.sunrise[0].substring(11, 16);
-      const sunsetTime = data.daily.sunset[0].substring(11, 16);
+      const sunriseVal = data.daily.sunrise && data.daily.sunrise[0];
+      const sunsetVal = data.daily.sunset && data.daily.sunset[0];
+
+      const sunriseTime = sunriseVal ? sunriseVal.substring(11, 16) : "--:--";
+      const sunsetTime = sunsetVal ? sunsetVal.substring(11, 16) : "--:--";
+
       document.getElementById('sunrise-text').textContent = `Рассвет: ${sunriseTime}`;
       document.getElementById('sunset-text').textContent = `Закат: ${sunsetTime}`;
       
       updateSunNodePosition(sunriseTime, sunsetTime, timezone);
 
       const hourlyContainer = document.getElementById('view-hourly');
-      if (hourlyContainer) {
+      if (hourlyContainer && data.hourly.time) {
         hourlyContainer.innerHTML = '';
         const currentHourISO = new Date().toISOString().substring(0, 13) + ":00";
         let startIdx = data.hourly.time.findIndex(t => t.startsWith(currentHourISO));
@@ -1881,12 +1907,12 @@
       }
 
       const dailyContainer = document.getElementById('view-daily');
-      if (dailyContainer) {
+      if (dailyContainer && data.daily.time) {
         dailyContainer.innerHTML = '';
-        const minArray = data.daily.temperature_2m_min;
-        const maxArray = data.daily.temperature_2m_max;
-        const absoluteMin = Math.min(...minArray);
-        const absoluteMax = Math.max(...maxArray);
+        const minArray = data.daily.temperature_2m_min || [];
+        const maxArray = data.daily.temperature_2m_max || [];
+        const absoluteMin = minArray.length ? Math.min(...minArray) : 0;
+        const absoluteMax = maxArray.length ? Math.max(...maxArray) : 30;
         const absRange = absoluteMax - absoluteMin || 1;
 
         for (let i = 0; i < 10; i++) {
@@ -1902,8 +1928,8 @@
           const dCode = data.daily.weather_code[i];
           const dIconName = getWeatherInfo(dCode, 1).icon;
 
-          const minT = minArray[i];
-          const maxT = maxArray[i];
+          const minT = minArray[i] !== undefined ? minArray[i] : 0;
+          const maxT = maxArray[i] !== undefined ? maxArray[i] : 0;
 
           const leftPct = ((minT - absoluteMin) / absRange) * 100;
           const widthPct = ((maxT - minT) / absRange) * 100;
@@ -1935,14 +1961,28 @@
       const loader = document.getElementById('screen-loader');
       if (loader) loader.classList.add('active');
 
+      // Создание контроллера отмены запроса по тайм-ауту для мобильных устройств
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 10000); // 10 секунд тайм-аута
+
       try {
-        const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m,pressure_msl&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,sunrise,sunset&timezone=${encodeURIComponent(timezone)}&forecast_days=10`);
+        const response = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m,pressure_msl&hourly=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,sunrise,sunset&timezone=${encodeURIComponent(timezone)}&forecast_days=10`, { signal: controller.signal });
+        
+        clearTimeout(timeoutId);
+
         if (!response.ok) throw new Error("API error");
         const data = await response.json();
         
-        updateUI(data, cityName, data.timezone);
+        updateUI(data, cityName, data.timezone || timezone);
       } catch (err) {
-        alert("Не удалось загрузить данные погодного дашборда.");
+        clearTimeout(timeoutId);
+        let userMessage = "Не удалось загрузить данные погодного дашборда.";
+        if (err.name === 'AbortError') {
+          userMessage = "Время ожидания сервера истекло. Проверьте подключение к сети.";
+        }
+        alert(userMessage);
         console.error(err);
       } finally {
         if (loader) loader.classList.remove('active');
@@ -2020,7 +2060,8 @@
       } catch (err) {
         console.error("Ошибка геокодирования: ", err);
       } finally {
-        if (spinner) spinner.add('hidden');
+        // ИСПРАВЛЕНО: Заменен некорректный метод spinner.add на класс spinner.classList.add
+        if (spinner) spinner.classList.add('hidden');
       }
     }
 
